@@ -1,3 +1,5 @@
 **
 !Dockerfile
 !source/**
+source/.git
+source/.git/**

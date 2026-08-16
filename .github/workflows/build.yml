@@ -6,14 +6,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tailscale-halfclose-v1.102.2-release
+  cancel-in-progress: false
+
 env:
   IMAGE: ghcr.io/9173860/tailscale-halfclose
   SOURCE_REPOSITORY: 9173860/tailscale
-  SOURCE_COMMIT: cde955f3b8c8cf00978858d99a5441f5ed52b584
+  SOURCE_BRANCH: release/v1.102.2-halfclose-slice-25036ff3
+  SOURCE_BASE: eb67e5dcbe145d63e1128b9b4b630f8a82da101f
+  SOURCE_SERVE_COMMIT: 969b8867cbd6193e1cc0ed6a5271ad391a889765
+  SOURCE_COMMIT: 65394776006e93dc05354bb192fd4bb3e5e92f16
+  SOURCE_TREE: ce12da6e288153b7d2bc2e5129681dbfb59fe47c
+  OFFICIAL_IMAGE: docker.io/tailscale/tailscale
+  OFFICIAL_INDEX: sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
+  OFFICIAL_AMD64: sha256:4107a12b1a0466bb3f2c968d5fa35acf509cd7865a958ce1af36724e9f016342
+  OFFICIAL_ARM64: sha256:fdbdb434c50a6d3a5ed73f2b15ef66228dd2d265c1729e55f9a663ae804c5453
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == '9173860/tailscale-halfclose-build'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == '9173860/tailscale-halfclose-build' && github.actor == '9173860'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -22,10 +34,12 @@ jobs:
       id-token: write
     steps:
       - name: Checkout release definition
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
+        with:
+          persist-credentials: false
 
       - name: Checkout exact source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a
         with:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_COMMIT }}
@@ -33,16 +47,30 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify source identity and six-file allowlist
+      - name: Verify source identity, PR patch IDs, and six-file allowlist
         shell: bash
         run: |
           set -euo pipefail
+          git -C source fetch --no-tags https://github.com/tailscale/tailscale.git \
+            refs/pull/20881/head:refs/release-verification/pr-20881 \
+            refs/pull/20886/head:refs/release-verification/pr-20886
           test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
-          test "$(git -C source rev-parse HEAD^)" = "b24757ee86a0a0716ba653a9a2ee301334671d2e"
-          test "$(git -C source rev-parse HEAD^^^)" = "05a91829316e055517a1e84f7b00016846ef4107"
-          git -C source diff --check 05a91829316e055517a1e84f7b00016846ef4107..HEAD
-          git -C source diff --name-only 05a91829316e055517a1e84f7b00016846ef4107..HEAD | sort > /tmp/actual-files
-          sort > /tmp/want-files <<'EOF'
+          test "$(git -C source rev-parse HEAD^{tree})" = "$SOURCE_TREE"
+          test "$(git -C source rev-parse HEAD^)" = "$SOURCE_SERVE_COMMIT"
+          test "$(git -C source rev-parse HEAD^^)" = "$SOURCE_BASE"
+          test "$(git ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "refs/heads/${SOURCE_BRANCH}" | cut -f1)" = "$SOURCE_COMMIT"
+          test "$(git -C source rev-parse 'refs/tags/v1.102.2^{}')" = "$SOURCE_BASE"
+          test "$(git -C source rev-parse refs/release-verification/pr-20881)" = b32a93e5fd1a4bef1c9d679ab6debb01639706d5
+          test "$(git -C source rev-parse refs/release-verification/pr-20886)" = 71aa5296baed84ed99e3353f1a48b992d8b71433
+          test "$(git -C source rev-parse b32a93e5fd1a4bef1c9d679ab6debb01639706d5^{tree})" = 4392ba00687f3781b232a1ec8267ec1b7aa7b0bb
+          test "$(git -C source rev-parse 71aa5296baed84ed99e3353f1a48b992d8b71433^{tree})" = 63cb6205cba9753558cee77cc6d07117d375d985
+          test "$(git -C source show b32a93e5fd1a4bef1c9d679ab6debb01639706d5 | git patch-id --stable | cut -d' ' -f1)" = d6136b17085dcb72dabf5281f3dbd3fc8aa2df46
+          test "$(git -C source show "$SOURCE_SERVE_COMMIT" | git patch-id --stable | cut -d' ' -f1)" = d6136b17085dcb72dabf5281f3dbd3fc8aa2df46
+          test "$(git -C source show 71aa5296baed84ed99e3353f1a48b992d8b71433 | git patch-id --stable | cut -d' ' -f1)" = 928e411132e47ea4a818996a43d10f17b7c85d1d
+          test "$(git -C source show "$SOURCE_COMMIT" | git patch-id --stable | cut -d' ' -f1)" = 928e411132e47ea4a818996a43d10f17b7c85d1d
+          git -C source diff --check "$SOURCE_BASE..$SOURCE_COMMIT"
+          git -C source diff --name-only "$SOURCE_BASE..$SOURCE_COMMIT" | sort > actual-files
+          sort > want-files <<'EOF'
           ipn/ipnlocal/serve.go
           ipn/ipnlocal/serve_test.go
           net/socks5/socks5.go
@@ -50,88 +78,146 @@ jobs:
           net/tsdial/tsdial.go
           net/tsdial/tsdial_test.go
           EOF
-          diff -u /tmp/want-files /tmp/actual-files
+          diff -u want-files actual-files
+          test -z "$(git -C source status --short --untracked-files=all)"
 
       - name: Run directed and package tests
         working-directory: source
-        run: go test ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+        run: go test -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
 
       - name: Run race tests
         working-directory: source
-        run: go test -race ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+        run: go test -race -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
 
       - name: Run vet
         working-directory: source
         run: go vet ./net/tsdial ./net/socks5 ./ipn/ipnlocal
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+      - name: Verify no old candidate package remains
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api /user/packages/container/tailscale-halfclose >old-package.json 2>old-package.err; then
+            echo 'Refusing to overwrite an existing candidate package' >&2
+            exit 1
+          fi
+          grep -q 'HTTP 404' old-package.err
+          rm -f old-package.json old-package.err
 
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567
+        with:
+          version: v0.66.0
+          cache: false
+
+      - name: Download one fresh Trivy database and record identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.cache/trivy"
+          trivy image --download-db-only
+          trivy version --format json | tee trivy-version.json
+          jq -e '.Version == "0.66.0" and (.VulnerabilityDB.UpdatedAt | length > 0) and (.VulnerabilityDB.DownloadedAt | length > 0)' trivy-version.json
+
+      - name: Verify and scan official v1.102.2 baseline per platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(docker buildx imagetools inspect --raw "$OFFICIAL_IMAGE@$OFFICIAL_INDEX")"
+          test "$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<<"$raw")" = "$OFFICIAL_AMD64"
+          test "$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<<"$raw")" = "$OFFICIAL_ARM64"
+          for tuple in "amd64:$OFFICIAL_AMD64" "arm64:$OFFICIAL_ARM64"; do
+            platform="${tuple%%:*}"
+            digest="${tuple#*:}"
+            trivy image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
+              --output "trivy-official-linux-${platform}.json" "$OFFICIAL_IMAGE@$digest"
+            test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "trivy-official-linux-${platform}.json")" -eq 0
+          done
+
+      - name: Set up pinned QEMU
+        uses: docker/setup-qemu-action@288220e341e5c445ddb6d73e19a57a9012ceca88
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up pinned Buildx
+        uses: docker/setup-buildx-action@5b9cf3909b54a280b6df6eee035755eb1f2fd611
+        with:
+          driver-opts: image=docker.io/moby/buildkit@sha256:040d34121c27906c4ff9ac152a30d52bf2c5d328d3bb748916bb3d2743c02528
 
       - name: Log in to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        uses: docker/login-action@af63523ba5f55733d817da0fdb813e660152c72c
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push exact multi-platform source
-        id: build
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+      - name: Arm candidate cleanup fence
+        run: touch candidate-package-armed
+
+      - name: Build and push first reproducibility candidate
+        id: build1
+        uses: docker/build-push-action@2ca78c6bec76527009825f31aae0532b4d40d820
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          provenance: mode=max
-          sbom: true
-          tags: |
-            ${{ env.IMAGE }}:v1.98.8-halfclose-${{ env.SOURCE_COMMIT }}
-            ${{ env.IMAGE }}:sha-${{ env.SOURCE_COMMIT }}
+          no-cache: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:candidate-${{ github.run_id }}-1
           build-args: SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
 
-      - name: Resolve exact index and platform manifests
+      - name: Build and push independent reproducibility candidate
+        id: build2
+        uses: docker/build-push-action@2ca78c6bec76527009825f31aae0532b4d40d820
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          no-cache: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:candidate-${{ github.run_id }}-2
+          build-args: SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+
+      - name: Require reproducible index and platform manifests
         id: manifests
         shell: bash
         run: |
           set -euo pipefail
-          index='${{ steps.build.outputs.digest }}'
-          test "${index#sha256:}" != "$index"
-          raw="$(docker buildx imagetools inspect --raw "$IMAGE@$index")"
+          first='${{ steps.build1.outputs.digest }}'
+          second='${{ steps.build2.outputs.digest }}'
+          test "$first" = "$second"
+          raw="$(docker buildx imagetools inspect --raw "$IMAGE@$first")"
           amd64="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<<"$raw")"
           arm64="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<<"$raw")"
           test "$(grep -c '^sha256:' <<<"$amd64")" -eq 1
           test "$(grep -c '^sha256:' <<<"$arm64")" -eq 1
-          printf 'index=%s\namd64=%s\narm64=%s\n' "$index" "$amd64" "$arm64" | tee manifests.env
-          printf 'index=%s\namd64=%s\narm64=%s\n' "$index" "$amd64" "$arm64" >> "$GITHUB_OUTPUT"
+          printf 'workflow_commit=%s\nsource_base=%s\nsource_head=%s\nsource_tree=%s\nindex=%s\namd64=%s\narm64=%s\n' \
+            "$GITHUB_SHA" "$SOURCE_BASE" "$SOURCE_COMMIT" "$SOURCE_TREE" "$first" "$amd64" "$arm64" | tee release.env
+          printf 'index=%s\namd64=%s\narm64=%s\n' "$first" "$amd64" "$arm64" >> "$GITHUB_OUTPUT"
 
-      - name: Scan linux/amd64 with current Trivy database
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+      - name: Scan patched candidate per platform with the same fresh database
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tuple in 'amd64:${{ steps.manifests.outputs.amd64 }}' 'arm64:${{ steps.manifests.outputs.arm64 }}'; do
+            platform="${tuple%%:*}"
+            digest="${tuple#*:}"
+            trivy image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
+              --output "trivy-patched-linux-${platform}.json" "$IMAGE@$digest"
+            test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "trivy-patched-linux-${platform}.json")" -eq 0
+          done
+
+      - name: Install pinned Syft
+        uses: anchore/sbom-action/download-syft@52542941bb775adef77f7a51ff5ea984e600fab8
         with:
-          image-ref: ${{ env.IMAGE }}@${{ steps.manifests.outputs.amd64 }}
-          format: json
-          output: trivy-linux-amd64.json
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: '1'
-
-      - name: Scan linux/arm64 with current Trivy database
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
-        with:
-          image-ref: ${{ env.IMAGE }}@${{ steps.manifests.outputs.arm64 }}
-          format: json
-          output: trivy-linux-arm64.json
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: '1'
-
-      - name: Record scanner and database timestamp
-        run: trivy --version | tee trivy-version.txt
-
-      - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+          syft-version: v1.33.0
 
       - name: Generate per-platform SPDX JSON SBOMs
         shell: bash
@@ -142,28 +228,28 @@ jobs:
           jq -e '.spdxVersion == "SPDX-2.3"' sbom-linux-amd64.spdx.json sbom-linux-arm64.spdx.json
 
       - name: Attest index build provenance
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifests.outputs.index }}
           push-to-registry: true
 
       - name: Attest amd64 build provenance
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifests.outputs.amd64 }}
           push-to-registry: true
 
       - name: Attest arm64 build provenance
-        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifests.outputs.arm64 }}
           push-to-registry: true
 
       - name: Attest amd64 SPDX SBOM
-        uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f
+        uses: actions/attest-sbom@5729fe4dc697fb7538e4e94fd44d040aac1367b2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifests.outputs.amd64 }}
@@ -171,60 +257,117 @@ jobs:
           push-to-registry: true
 
       - name: Attest arm64 SPDX SBOM
-        uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f
+        uses: actions/attest-sbom@5729fe4dc697fb7538e4e94fd44d040aac1367b2
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.manifests.outputs.arm64 }}
           sbom-path: sbom-linux-arm64.spdx.json
           push-to-registry: true
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+      - name: Install pinned cosign
+        uses: sigstore/cosign-installer@874852de93c66509b01dc7cd80f7a5385182d017
         with:
           cosign-release: v3.1.3
 
-      - name: Keyless-sign index and platform manifests
-        shell: bash
-        run: |
-          set -euo pipefail
-          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.index }}"
-          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.amd64 }}"
-          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.arm64 }}"
-
-      - name: Verify keyless signature identity
+      - name: Keyless-sign and verify repository, workflow, and ref identity
         shell: bash
         run: |
           set -euo pipefail
           identity='https://github.com/9173860/tailscale-halfclose-build/.github/workflows/build.yml@refs/heads/main'
           issuer='https://token.actions.githubusercontent.com'
           for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
+            cosign sign --yes "$IMAGE@$digest"
             cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$IMAGE@$digest" > "cosign-${digest#sha256:}.json"
+            jq -e --arg identity "$identity" 'length > 0 and all(.[]; .optional.Subject == $identity)' "cosign-${digest#sha256:}.json"
           done
+
+      - name: Verify GitHub provenance attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
+            gh attestation verify "oci://$IMAGE@$digest" --repo 9173860/tailscale-halfclose-build --format json > "attestation-${digest#sha256:}.json"
+            jq -e 'length > 0' "attestation-${digest#sha256:}.json"
+          done
+
+      - name: Publish immutable release tags from the admitted index
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest='${{ steps.manifests.outputs.index }}'
+          docker buildx imagetools create \
+            --tag "$IMAGE:v1.102.2-halfclose-$SOURCE_COMMIT" \
+            --tag "$IMAGE:sha-$SOURCE_COMMIT" \
+            "$IMAGE@$digest"
+          test "$(docker buildx imagetools inspect "$IMAGE:v1.102.2-halfclose-$SOURCE_COMMIT" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest"
+          test "$(docker buildx imagetools inspect "$IMAGE:sha-$SOURCE_COMMIT" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest"
 
       - name: Make package public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh api --method PATCH /user/packages/container/tailscale-halfclose -f visibility=public
 
-      - name: Verify anonymous pull by exact digest
+      - name: Verify anonymous registry descriptors and amd64 runtime imageID
         shell: bash
         run: |
           set -euo pipefail
           docker logout ghcr.io
           token="$(curl -fsSL 'https://ghcr.io/token?scope=repository:9173860/tailscale-halfclose:pull' | jq -r .token)"
           for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
-            curl -fsSI -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' "https://ghcr.io/v2/9173860/tailscale-halfclose/manifests/$digest"
+            headers="$(mktemp)"
+            body="$(mktemp)"
+            curl -fsSL -D "$headers" -o "$body" -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+              "https://ghcr.io/v2/9173860/tailscale-halfclose/manifests/$digest"
+            tr -d '\r' < "$headers" | grep -Fqi "docker-content-digest: $digest"
+            test "$(sha256sum "$body" | cut -d' ' -f1)" = "${digest#sha256:}"
+            rm -f "$headers" "$body"
           done
+          docker pull --platform linux/amd64 "$IMAGE@${{ steps.manifests.outputs.amd64 }}"
+          runtime_id="$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{.Id}}')"
+          test "$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
+          test "$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$SOURCE_COMMIT"
+          docker run --rm --entrypoint /usr/local/bin/tailscale "$IMAGE@${{ steps.manifests.outputs.amd64 }}" version | tee tailscale-version.txt
+          grep -Fq '1.102.2' tailscale-version.txt
+          printf 'amd64_runtime_image_id=%s\n' "$runtime_id" | tee runtime.env
 
       - name: Upload supply-chain evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: supply-chain-evidence
-          if-no-files-found: warn
+          name: supply-chain-evidence-${{ github.run_id }}
+          if-no-files-found: error
           path: |
-            manifests.env
+            release.env
+            runtime.env
+            tailscale-version.txt
             trivy-*.json
-            trivy-version.txt
             sbom-*.spdx.json
             cosign-*.json
+            attestation-*.json
+
+      - name: Mark publication complete after evidence upload
+        run: touch publication-complete
+
+      - name: Safely remove failed or cancelled candidate package
+        if: always() && (failure() || cancelled())
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e publication-complete
+          if test -e candidate-package-armed; then
+            if gh api /user/packages/container/tailscale-halfclose >/dev/null 2>package.err; then
+              gh api --method DELETE /user/packages/container/tailscale-halfclose
+              if gh api /user/packages/container/tailscale-halfclose >/dev/null 2>package-after.err; then
+                echo 'Candidate package still exists after cleanup' >&2
+                exit 1
+              fi
+              grep -q 'HTTP 404' package-after.err
+            else
+              grep -q 'HTTP 404' package.err
+            fi
+          fi

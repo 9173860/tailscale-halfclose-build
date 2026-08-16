@@ -1,7 +1,7 @@
 {
   "stable": {
-    "tag": "v1.98.8",
-    "resolved_commit": "05a91829316e055517a1e84f7b00016846ef4107"
+    "tag": "v1.102.2",
+    "resolved_commit": "eb67e5dcbe145d63e1128b9b4b630f8a82da101f"
   },
   "upstream_prs": [
     {
@@ -23,14 +23,13 @@
   ],
   "backport": {
     "repository": "https://github.com/9173860/tailscale",
-    "branch": "release/v1.98.8-halfclose",
-    "parent": "05a91829316e055517a1e84f7b00016846ef4107",
-    "serve_commit": "ce39a42bd385ad5a54ac7b5f61332e04bc5c7d7a",
-    "socks_commit": "b24757ee86a0a0716ba653a9a2ee301334671d2e",
-    "compatibility_commit": "cde955f3b8c8cf00978858d99a5441f5ed52b584",
-    "head": "cde955f3b8c8cf00978858d99a5441f5ed52b584",
-    "tree": "10bac89dee7e820521c5a079fb228308466eac67",
-    "serve_backport_patch_id": "5a4b0362b836a41596cd8a804dc570ddcd075b4f",
+    "branch": "release/v1.102.2-halfclose-slice-25036ff3",
+    "parent": "eb67e5dcbe145d63e1128b9b4b630f8a82da101f",
+    "serve_commit": "969b8867cbd6193e1cc0ed6a5271ad391a889765",
+    "socks_commit": "65394776006e93dc05354bb192fd4bb3e5e92f16",
+    "head": "65394776006e93dc05354bb192fd4bb3e5e92f16",
+    "tree": "ce12da6e288153b7d2bc2e5129681dbfb59fe47c",
+    "serve_backport_patch_id": "d6136b17085dcb72dabf5281f3dbd3fc8aa2df46",
     "socks_backport_patch_id": "928e411132e47ea4a818996a43d10f17b7c85d1d"
   },
   "allowlist": [
@@ -40,9 +39,5 @@
     "ipn/ipnlocal/serve_test.go",
     "net/socks5/socks5.go",
     "net/socks5/socks5_test.go"
-  ],
-  "conflict_resolution": {
-    "pr_20881": "Stable v1.98.8 predates serviceMeteredConn and raceDialUser tests. The backport omits those unavailable-main-only contexts, retains the sysConn CloseWrite change and the complete Serve dual-pump state machine, and adds net import required by the stable test file. Per-file blob and delta evidence is recorded in metadata/equivalence.md.",
-    "pr_20886": "Applied without conflict; canonical and stable patch IDs are identical."
-  }
+  ]
 }

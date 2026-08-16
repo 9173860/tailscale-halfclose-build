@@ -9,12 +9,17 @@ COPY source/ ./
 
 ARG TARGETARCH
 ARG SOURCE_COMMIT
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go install -trimpath -ldflags="-s -w -X tailscale.com/version.longStamp=1.98.8-halfclose -X tailscale.com/version.shortStamp=1.98.8 -X tailscale.com/version.gitCommitStamp=${SOURCE_COMMIT}" ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go install -trimpath -ldflags="-s -w -X tailscale.com/version.longStamp=1.102.2-halfclose -X tailscale.com/version.shortStamp=1.102.2 -X tailscale.com/version.gitCommitStamp=${SOURCE_COMMIT}" ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot
 
 FROM ${RUNTIME_IMAGE}
 
 ARG SOURCE_COMMIT
-RUN apk add --no-cache ca-certificates iptables iptables-legacy iproute2 ip6tables iputils \
+RUN apk add --no-cache \
+      ca-certificates=20260611-r0 \
+      iptables=1.8.11-r1 \
+      iptables-legacy=1.8.11-r1 \
+      iproute2=6.15.0-r0 \
+      iputils=20240905-r0 \
     && rm /usr/sbin/iptables \
     && ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables \
     && rm /usr/sbin/ip6tables \
@@ -22,9 +27,10 @@ RUN apk add --no-cache ca-certificates iptables iptables-legacy iproute2 ip6tabl
 COPY --from=build /go/bin/tailscale /go/bin/tailscaled /go/bin/containerboot /usr/local/bin/
 RUN mkdir /tailscale && ln -s /usr/local/bin/containerboot /tailscale/run.sh
 
-LABEL org.opencontainers.image.source="https://github.com/9173860/tailscale" \
+LABEL org.opencontainers.image.source="https://github.com/9173860/tailscale-halfclose-build" \
+      org.opencontainers.image.url="https://github.com/9173860/tailscale/tree/release/v1.102.2-halfclose-slice-25036ff3" \
       org.opencontainers.image.revision="${SOURCE_COMMIT}" \
-      org.opencontainers.image.version="v1.98.8-halfclose" \
-      org.opencontainers.image.title="Tailscale v1.98.8 half-close backport"
+      org.opencontainers.image.version="v1.102.2-halfclose" \
+      org.opencontainers.image.title="Tailscale v1.102.2 half-close backport"
 
 ENTRYPOINT ["/usr/local/bin/containerboot"]
