@@ -1,5 +1,6 @@
 ARG GO_IMAGE=docker.io/library/golang@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205
 ARG RUNTIME_IMAGE=docker.io/library/alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+ARG SOURCE_DATE_EPOCH
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 
 WORKDIR /src

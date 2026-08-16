@@ -214,12 +214,13 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
           no-cache: true
           provenance: false
           sbom: false
-          tags: ${{ env.IMAGE }}:candidate-${{ github.run_id }}-1
-          build-args: SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+          outputs: type=image,name=${{ env.IMAGE }}:candidate-${{ github.run_id }}-1,push=true,rewrite-timestamp=true
+          build-args: |
+            SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+            SOURCE_DATE_EPOCH=1786891198
 
       - name: Build and push independent reproducibility candidate
         id: build2
@@ -228,12 +229,13 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64,linux/arm64
-          push: true
           no-cache: true
           provenance: false
           sbom: false
-          tags: ${{ env.IMAGE }}:candidate-${{ github.run_id }}-2
-          build-args: SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+          outputs: type=image,name=${{ env.IMAGE }}:candidate-${{ github.run_id }}-2,push=true,rewrite-timestamp=true
+          build-args: |
+            SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+            SOURCE_DATE_EPOCH=1786891198
 
       - name: Require reproducible index and platform manifests
         id: manifests
