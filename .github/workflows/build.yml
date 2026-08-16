@@ -1,0 +1,229 @@
+name: Build and attest half-close OCI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/9173860/tailscale-halfclose
+  SOURCE_REPOSITORY: 9173860/tailscale
+  SOURCE_COMMIT: cde955f3b8c8cf00978858d99a5441f5ed52b584
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == '9173860/tailscale-halfclose-build'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout release definition
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ env.SOURCE_COMMIT }}
+          path: source
+          persist-credentials: false
+
+      - name: Verify source identity and six-file allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git -C source rev-parse HEAD^)" = "b24757ee86a0a0716ba653a9a2ee301334671d2e"
+          test "$(git -C source rev-parse HEAD^^^)" = "05a91829316e055517a1e84f7b00016846ef4107"
+          git -C source diff --check 05a91829316e055517a1e84f7b00016846ef4107..HEAD
+          git -C source diff --name-only 05a91829316e055517a1e84f7b00016846ef4107..HEAD | sort > /tmp/actual-files
+          sort > /tmp/want-files <<'EOF'
+          ipn/ipnlocal/serve.go
+          ipn/ipnlocal/serve_test.go
+          net/socks5/socks5.go
+          net/socks5/socks5_test.go
+          net/tsdial/tsdial.go
+          net/tsdial/tsdial_test.go
+          EOF
+          diff -u /tmp/want-files /tmp/actual-files
+
+      - name: Run directed and package tests
+        working-directory: source
+        run: go test ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+
+      - name: Run race tests
+        working-directory: source
+        run: go test -race ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+
+      - name: Run vet
+        working-directory: source
+        run: go vet ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push exact multi-platform source
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:v1.98.8-halfclose-${{ env.SOURCE_COMMIT }}
+            ${{ env.IMAGE }}:sha-${{ env.SOURCE_COMMIT }}
+          build-args: SOURCE_COMMIT=${{ env.SOURCE_COMMIT }}
+
+      - name: Resolve exact index and platform manifests
+        id: manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          index='${{ steps.build.outputs.digest }}'
+          test "${index#sha256:}" != "$index"
+          raw="$(docker buildx imagetools inspect --raw "$IMAGE@$index")"
+          amd64="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<<"$raw")"
+          arm64="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<<"$raw")"
+          test "$(grep -c '^sha256:' <<<"$amd64")" -eq 1
+          test "$(grep -c '^sha256:' <<<"$arm64")" -eq 1
+          printf 'index=%s\namd64=%s\narm64=%s\n' "$index" "$amd64" "$arm64" | tee manifests.env
+          printf 'index=%s\namd64=%s\narm64=%s\n' "$index" "$amd64" "$arm64" >> "$GITHUB_OUTPUT"
+
+      - name: Scan linux/amd64 with current Trivy database
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.manifests.outputs.amd64 }}
+          format: json
+          output: trivy-linux-amd64.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+
+      - name: Scan linux/arm64 with current Trivy database
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.manifests.outputs.arm64 }}
+          format: json
+          output: trivy-linux-arm64.json
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
+
+      - name: Record scanner and database timestamp
+        run: trivy --version | tee trivy-version.txt
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
+
+      - name: Generate per-platform SPDX JSON SBOMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          syft scan "$IMAGE@${{ steps.manifests.outputs.amd64 }}" -o spdx-json=sbom-linux-amd64.spdx.json
+          syft scan "$IMAGE@${{ steps.manifests.outputs.arm64 }}" -o spdx-json=sbom-linux-arm64.spdx.json
+          jq -e '.spdxVersion == "SPDX-2.3"' sbom-linux-amd64.spdx.json sbom-linux-arm64.spdx.json
+
+      - name: Attest index build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifests.outputs.index }}
+          push-to-registry: true
+
+      - name: Attest amd64 build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifests.outputs.amd64 }}
+          push-to-registry: true
+
+      - name: Attest arm64 build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifests.outputs.arm64 }}
+          push-to-registry: true
+
+      - name: Attest amd64 SPDX SBOM
+        uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifests.outputs.amd64 }}
+          sbom-path: sbom-linux-amd64.spdx.json
+          push-to-registry: true
+
+      - name: Attest arm64 SPDX SBOM
+        uses: actions/attest-sbom@51e74621a501c89df81fc1391c5a8f4cfc9fab2f
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.manifests.outputs.arm64 }}
+          sbom-path: sbom-linux-arm64.spdx.json
+          push-to-registry: true
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.3
+
+      - name: Keyless-sign index and platform manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.index }}"
+          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.amd64 }}"
+          cosign sign --yes "$IMAGE@${{ steps.manifests.outputs.arm64 }}"
+
+      - name: Verify keyless signature identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity='https://github.com/9173860/tailscale-halfclose-build/.github/workflows/build.yml@refs/heads/main'
+          issuer='https://token.actions.githubusercontent.com'
+          for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
+            cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$IMAGE@$digest" > "cosign-${digest#sha256:}.json"
+          done
+
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method PATCH /user/packages/container/tailscale-halfclose -f visibility=public
+
+      - name: Verify anonymous pull by exact digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io
+          token="$(curl -fsSL 'https://ghcr.io/token?scope=repository:9173860/tailscale-halfclose:pull' | jq -r .token)"
+          for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
+            curl -fsSI -H "Authorization: Bearer $token" -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' "https://ghcr.io/v2/9173860/tailscale-halfclose/manifests/$digest"
+          done
+
+      - name: Upload supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: supply-chain-evidence
+          if-no-files-found: error
+          path: |
+            manifests.env
+            trivy-*.json
+            trivy-version.txt
+            sbom-*.spdx.json
+            cosign-*.json

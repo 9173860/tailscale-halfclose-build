@@ -1,0 +1,48 @@
+{
+  "stable": {
+    "tag": "v1.98.8",
+    "resolved_commit": "05a91829316e055517a1e84f7b00016846ef4107"
+  },
+  "upstream_prs": [
+    {
+      "number": 20881,
+      "url": "https://github.com/tailscale/tailscale/pull/20881",
+      "base": "cfe32b8be6a33f8e24fbc369cbfbf7c729d9e042",
+      "head": "b32a93e5fd1a4bef1c9d679ab6debb01639706d5",
+      "tree": "4392ba00687f3781b232a1ec8267ec1b7aa7b0bb",
+      "canonical_patch_id": "d6136b17085dcb72dabf5281f3dbd3fc8aa2df46"
+    },
+    {
+      "number": 20886,
+      "url": "https://github.com/tailscale/tailscale/pull/20886",
+      "base": "cfe32b8be6a33f8e24fbc369cbfbf7c729d9e042",
+      "head": "71aa5296baed84ed99e3353f1a48b992d8b71433",
+      "tree": "63cb6205cba9753558cee77cc6d07117d375d985",
+      "canonical_patch_id": "928e411132e47ea4a818996a43d10f17b7c85d1d"
+    }
+  ],
+  "backport": {
+    "repository": "https://github.com/9173860/tailscale",
+    "branch": "release/v1.98.8-halfclose",
+    "parent": "05a91829316e055517a1e84f7b00016846ef4107",
+    "serve_commit": "ce39a42bd385ad5a54ac7b5f61332e04bc5c7d7a",
+    "socks_commit": "b24757ee86a0a0716ba653a9a2ee301334671d2e",
+    "compatibility_commit": "cde955f3b8c8cf00978858d99a5441f5ed52b584",
+    "head": "cde955f3b8c8cf00978858d99a5441f5ed52b584",
+    "tree": "10bac89dee7e820521c5a079fb228308466eac67",
+    "serve_backport_patch_id": "5a4b0362b836a41596cd8a804dc570ddcd075b4f",
+    "socks_backport_patch_id": "928e411132e47ea4a818996a43d10f17b7c85d1d"
+  },
+  "allowlist": [
+    "net/tsdial/tsdial.go",
+    "net/tsdial/tsdial_test.go",
+    "ipn/ipnlocal/serve.go",
+    "ipn/ipnlocal/serve_test.go",
+    "net/socks5/socks5.go",
+    "net/socks5/socks5_test.go"
+  ],
+  "conflict_resolution": {
+    "pr_20881": "Stable v1.98.8 predates serviceMeteredConn and raceDialUser tests. The backport omits those unavailable-main-only contexts, retains the sysConn CloseWrite change and the complete Serve dual-pump state machine, and adds net import required by the stable test file. Per-file blob and delta evidence is recorded in metadata/equivalence.md.",
+    "pr_20886": "Applied without conflict; canonical and stable patch IDs are identical."
+  }
+}
