@@ -1,4 +1,4 @@
-ARG GO_IMAGE=docker.io/library/golang@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816
+ARG GO_IMAGE=docker.io/library/golang@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205
 ARG RUNTIME_IMAGE=docker.io/library/alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
 FROM ${GO_IMAGE} AS build
 

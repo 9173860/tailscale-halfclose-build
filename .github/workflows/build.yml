@@ -16,12 +16,14 @@ env:
   SOURCE_BRANCH: release/v1.102.2-halfclose-slice-25036ff3
   SOURCE_BASE: eb67e5dcbe145d63e1128b9b4b630f8a82da101f
   SOURCE_SERVE_COMMIT: 969b8867cbd6193e1cc0ed6a5271ad391a889765
-  SOURCE_COMMIT: 65394776006e93dc05354bb192fd4bb3e5e92f16
-  SOURCE_TREE: ce12da6e288153b7d2bc2e5129681dbfb59fe47c
+  SOURCE_SOCKS_COMMIT: 65394776006e93dc05354bb192fd4bb3e5e92f16
+  SOURCE_COMMIT: 5c1610fb887688844917d1152064ce92f31e8055
+  SOURCE_TREE: 810ea4a25f1ee5934e4f1b88d2c20e04cff7b787
   OFFICIAL_IMAGE: docker.io/tailscale/tailscale
   OFFICIAL_INDEX: sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
   OFFICIAL_AMD64: sha256:4107a12b1a0466bb3f2c968d5fa35acf509cd7865a958ce1af36724e9f016342
   OFFICIAL_ARM64: sha256:fdbdb434c50a6d3a5ed73f2b15ef66228dd2d265c1729e55f9a663ae804c5453
+  GO_IMAGE: docker.io/library/golang@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205
   TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:adbf5948d99de471725d37d2cfbd982178971d1cf081615284671d1c8ba99fb8
 
 jobs:
@@ -48,7 +50,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify source identity, PR patch IDs, and six-file allowlist
+      - name: Verify source identity, PR patch IDs, and eight-file allowlist
         shell: bash
         run: |
           set -euo pipefail
@@ -57,8 +59,9 @@ jobs:
             refs/pull/20886/head:refs/release-verification/pr-20886
           test "$(git -C source rev-parse HEAD)" = "$SOURCE_COMMIT"
           test "$(git -C source rev-parse HEAD^{tree})" = "$SOURCE_TREE"
-          test "$(git -C source rev-parse HEAD^)" = "$SOURCE_SERVE_COMMIT"
-          test "$(git -C source rev-parse HEAD^^)" = "$SOURCE_BASE"
+          test "$(git -C source rev-parse HEAD^)" = "$SOURCE_SOCKS_COMMIT"
+          test "$(git -C source rev-parse HEAD^^)" = "$SOURCE_SERVE_COMMIT"
+          test "$(git -C source rev-parse HEAD^^^)" = "$SOURCE_BASE"
           test "$(git ls-remote "https://github.com/${SOURCE_REPOSITORY}.git" "refs/heads/${SOURCE_BRANCH}" | cut -f1)" = "$SOURCE_COMMIT"
           test "$(git -C source rev-parse 'refs/tags/v1.102.2^{}')" = "$SOURCE_BASE"
           test "$(git -C source rev-parse refs/release-verification/pr-20881)" = b32a93e5fd1a4bef1c9d679ab6debb01639706d5
@@ -68,10 +71,15 @@ jobs:
           test "$(git -C source show b32a93e5fd1a4bef1c9d679ab6debb01639706d5 | git patch-id --stable | cut -d' ' -f1)" = d6136b17085dcb72dabf5281f3dbd3fc8aa2df46
           test "$(git -C source show "$SOURCE_SERVE_COMMIT" | git patch-id --stable | cut -d' ' -f1)" = d6136b17085dcb72dabf5281f3dbd3fc8aa2df46
           test "$(git -C source show 71aa5296baed84ed99e3353f1a48b992d8b71433 | git patch-id --stable | cut -d' ' -f1)" = 928e411132e47ea4a818996a43d10f17b7c85d1d
-          test "$(git -C source show "$SOURCE_COMMIT" | git patch-id --stable | cut -d' ' -f1)" = 928e411132e47ea4a818996a43d10f17b7c85d1d
+          test "$(git -C source show "$SOURCE_SOCKS_COMMIT" | git patch-id --stable | cut -d' ' -f1)" = 928e411132e47ea4a818996a43d10f17b7c85d1d
+          test "$(git -C source diff --name-only "$SOURCE_SOCKS_COMMIT..$SOURCE_COMMIT" | sort | tr '\n' ' ')" = 'go.mod go.sum '
+          test "$(git -C source show "$SOURCE_COMMIT:go.mod" | sed -n 's/^[[:space:]]*golang.org\/x\/image \(v[^[:space:]]*\).*/\1/p')" = v0.43.0
+          test "$(git -C source show "$SOURCE_COMMIT:go.mod" | sed -n 's/^[[:space:]]*golang.org\/x\/text \(v[^[:space:]]*\).*/\1/p')" = v0.40.0
           git -C source diff --check "$SOURCE_BASE..$SOURCE_COMMIT"
           git -C source diff --name-only "$SOURCE_BASE..$SOURCE_COMMIT" | sort > actual-files
           sort > want-files <<'EOF'
+          go.mod
+          go.sum
           ipn/ipnlocal/serve.go
           ipn/ipnlocal/serve_test.go
           net/socks5/socks5.go
@@ -82,17 +90,33 @@ jobs:
           diff -u want-files actual-files
           test -z "$(git -C source status --short --untracked-files=all)"
 
+      - name: Verify exact Go compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$GO_IMAGE" >/dev/null
+          docker run --rm --platform linux/amd64 "$GO_IMAGE" go version | tee go-version.txt
+          grep -Fqx 'go version go1.26.6 linux/amd64' go-version.txt
+
       - name: Run directed and package tests
-        working-directory: source
-        run: go test -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+        shell: bash
+        run: docker run --rm --platform linux/amd64 --mount "type=bind,src=$PWD/source,dst=/src" --workdir /src "$GO_IMAGE" go test -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
 
       - name: Run race tests
-        working-directory: source
-        run: go test -race -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+        shell: bash
+        run: docker run --rm --platform linux/amd64 --mount "type=bind,src=$PWD/source,dst=/src" --workdir /src "$GO_IMAGE" go test -race -count=1 ./net/tsdial ./net/socks5 ./ipn/ipnlocal
 
       - name: Run vet
-        working-directory: source
-        run: go vet ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+        shell: bash
+        run: docker run --rm --platform linux/amd64 --mount "type=bind,src=$PWD/source,dst=/src" --workdir /src "$GO_IMAGE" go vet ./net/tsdial ./net/socks5 ./ipn/ipnlocal
+
+      - name: Run pinned govulncheck on shipped commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 --mount "type=bind,src=$PWD/source,dst=/src" --workdir /src "$GO_IMAGE" \
+            sh -ec 'go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 -json ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot' > govulncheck.json
+          test -s govulncheck.json
 
       - name: Verify no old candidate package remains
         env:
@@ -135,7 +159,7 @@ jobs:
           trivy_container version --format json | tee trivy-version.json
           jq -e '.Version == "0.66.0" and (.VulnerabilityDB.UpdatedAt | length > 0) and (.VulnerabilityDB.DownloadedAt | length > 0)' trivy-version.json
 
-      - name: Verify and scan official v1.102.2 baseline per platform
+      - name: Record known-vulnerable official v1.102.2 baseline per platform
         shell: bash
         run: |
           set -euo pipefail
@@ -156,9 +180,10 @@ jobs:
           for tuple in "amd64:$OFFICIAL_AMD64" "arm64:$OFFICIAL_ARM64"; do
             platform="${tuple%%:*}"
             digest="${tuple#*:}"
-            trivy_container image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
+            trivy_container image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 0 \
               --output "trivy-official-linux-${platform}.json" "$OFFICIAL_IMAGE@$digest"
-            test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "trivy-official-linux-${platform}.json")" -eq 0
+            jq -e '[.Results[]?.Vulnerabilities[]? | select(.VulnerabilityID == "CVE-2026-46602" and .Severity == "HIGH")] | length > 0' "trivy-official-linux-${platform}.json" >/dev/null
+            test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "trivy-official-linux-${platform}.json")" -eq 0
           done
 
       - name: Set up pinned QEMU
@@ -367,6 +392,7 @@ jobs:
           test "$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$SOURCE_COMMIT"
           docker run --rm --entrypoint /usr/local/bin/tailscale "$IMAGE@${{ steps.manifests.outputs.amd64 }}" version | tee tailscale-version.txt
           grep -Fq '1.102.2' tailscale-version.txt
+          grep -Fq 'go version: go1.26.6' tailscale-version.txt
           printf 'amd64_runtime_image_id=%s\n' "$runtime_id" | tee runtime.env
 
       - name: Capture primary status before evidence upload
@@ -387,6 +413,8 @@ jobs:
             release.env
             runtime.env
             tailscale-version.txt
+            go-version.txt
+            govulncheck.json
             trivy-*.json
             sbom-*.spdx.json
             cosign-*.json
@@ -406,6 +434,8 @@ jobs:
             release.env
             runtime.env
             tailscale-version.txt
+            go-version.txt
+            govulncheck.json
             trivy-version.json
             trivy-official-linux-amd64.json
             trivy-official-linux-arm64.json
