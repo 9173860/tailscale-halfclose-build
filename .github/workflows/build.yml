@@ -370,8 +370,13 @@ jobs:
           issuer='https://token.actions.githubusercontent.com'
           for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
             cosign sign --yes "$IMAGE@$digest"
-            cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" "$IMAGE@$digest" > "cosign-${digest#sha256:}.json"
-            jq -e --arg identity "$identity" 'length > 0 and all(.[]; .optional.Subject == $identity)' "cosign-${digest#sha256:}.json"
+            cosign verify --certificate-identity "$identity" --certificate-oidc-issuer "$issuer" --output json \
+              "$IMAGE@$digest" > "cosign-${digest#sha256:}.json"
+            jq -e --arg digest "$digest" '
+              length > 0 and
+              all(.[]; .critical.image["docker-manifest-digest"] == $digest) and
+              any(.[]; .critical.type == "https://sigstore.dev/cosign/sign/v1")
+            ' "cosign-${digest#sha256:}.json"
           done
 
       - name: Verify GitHub provenance attestations
