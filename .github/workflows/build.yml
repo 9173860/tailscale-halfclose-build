@@ -22,6 +22,7 @@ env:
   OFFICIAL_INDEX: sha256:321ce041508c19079b57a28b6666c8d81ab0b08accc0a2585b3ab663d557ac24
   OFFICIAL_AMD64: sha256:4107a12b1a0466bb3f2c968d5fa35acf509cd7865a958ce1af36724e9f016342
   OFFICIAL_ARM64: sha256:fdbdb434c50a6d3a5ed73f2b15ef66228dd2d265c1729e55f9a663ae804c5453
+  TRIVY_IMAGE: docker.io/aquasec/trivy@sha256:adbf5948d99de471725d37d2cfbd982178971d1cf081615284671d1c8ba99fb8
 
 jobs:
   publish:
@@ -106,32 +107,56 @@ jobs:
           grep -q 'HTTP 404' old-package.err
           rm -f old-package.json old-package.err
 
-      - name: Install pinned Trivy
-        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567
-        with:
-          version: v0.66.0
-          cache: false
+      - name: Verify pinned Trivy container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/amd64 "$TRIVY_IMAGE" >/dev/null
+          test "$(docker image inspect "$TRIVY_IMAGE" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
 
       - name: Download one fresh Trivy database and record identity
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$HOME/.cache/trivy"
-          trivy image --download-db-only
-          trivy version --format json | tee trivy-version.json
+          mkdir -p "$HOME/.cache/trivy"
+          trivy_container() {
+            local docker_config_dir="${DOCKER_CONFIG:-$HOME/.docker}"
+            local -a mounts=(
+              --mount "type=bind,src=$HOME/.cache/trivy,dst=/root/.cache/trivy"
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace"
+            )
+            if test -f "$docker_config_dir/config.json"; then
+              mounts+=(--mount "type=bind,src=$docker_config_dir,dst=/root/.docker,readonly")
+            fi
+            docker run --rm --platform linux/amd64 --workdir /workspace "${mounts[@]}" "$TRIVY_IMAGE" "$@"
+          }
+          trivy_container image --download-db-only
+          trivy_container version --format json | tee trivy-version.json
           jq -e '.Version == "0.66.0" and (.VulnerabilityDB.UpdatedAt | length > 0) and (.VulnerabilityDB.DownloadedAt | length > 0)' trivy-version.json
 
       - name: Verify and scan official v1.102.2 baseline per platform
         shell: bash
         run: |
           set -euo pipefail
+          trivy_container() {
+            local docker_config_dir="${DOCKER_CONFIG:-$HOME/.docker}"
+            local -a mounts=(
+              --mount "type=bind,src=$HOME/.cache/trivy,dst=/root/.cache/trivy"
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace"
+            )
+            if test -f "$docker_config_dir/config.json"; then
+              mounts+=(--mount "type=bind,src=$docker_config_dir,dst=/root/.docker,readonly")
+            fi
+            docker run --rm --platform linux/amd64 --workdir /workspace "${mounts[@]}" "$TRIVY_IMAGE" "$@"
+          }
           raw="$(docker buildx imagetools inspect --raw "$OFFICIAL_IMAGE@$OFFICIAL_INDEX")"
           test "$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<<"$raw")" = "$OFFICIAL_AMD64"
           test "$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<<"$raw")" = "$OFFICIAL_ARM64"
           for tuple in "amd64:$OFFICIAL_AMD64" "arm64:$OFFICIAL_ARM64"; do
             platform="${tuple%%:*}"
             digest="${tuple#*:}"
-            trivy image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
+            trivy_container image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
               --output "trivy-official-linux-${platform}.json" "$OFFICIAL_IMAGE@$digest"
             test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "trivy-official-linux-${platform}.json")" -eq 0
           done
@@ -206,10 +231,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trivy_container() {
+            local docker_config_dir="${DOCKER_CONFIG:-$HOME/.docker}"
+            local -a mounts=(
+              --mount "type=bind,src=$HOME/.cache/trivy,dst=/root/.cache/trivy"
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace"
+            )
+            if test -f "$docker_config_dir/config.json"; then
+              mounts+=(--mount "type=bind,src=$docker_config_dir,dst=/root/.docker,readonly")
+            fi
+            docker run --rm --platform linux/amd64 --workdir /workspace "${mounts[@]}" "$TRIVY_IMAGE" "$@"
+          }
           for tuple in 'amd64:${{ steps.manifests.outputs.amd64 }}' 'arm64:${{ steps.manifests.outputs.arm64 }}'; do
             platform="${tuple%%:*}"
             digest="${tuple#*:}"
-            trivy image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
+            trivy_container image --skip-db-update --format json --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
               --output "trivy-patched-linux-${platform}.json" "$IMAGE@$digest"
             test "$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "trivy-patched-linux-${platform}.json")" -eq 0
           done
@@ -333,12 +369,20 @@ jobs:
           grep -Fq '1.102.2' tailscale-version.txt
           printf 'amd64_runtime_image_id=%s\n' "$runtime_id" | tee runtime.env
 
+      - name: Capture primary status before evidence upload
+        if: always()
+        id: primary_status
+        shell: bash
+        run: printf 'status=%s\n' '${{ job.status }}' >> "$GITHUB_OUTPUT"
+
       - name: Upload supply-chain evidence
         if: always()
+        id: evidence_upload
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: supply-chain-evidence-${{ github.run_id }}
-          if-no-files-found: error
+          if-no-files-found: warn
           path: |
             release.env
             runtime.env
@@ -348,7 +392,52 @@ jobs:
             cosign-*.json
             attestation-*.json
 
+      - name: Require complete evidence before publication completion
+        if: always()
+        id: evidence_gate
+        shell: bash
+        env:
+          PRIMARY_STATUS: ${{ steps.primary_status.outputs.status }}
+          UPLOAD_OUTCOME: ${{ steps.evidence_upload.outcome }}
+        run: |
+          set -euo pipefail
+          complete=true
+          required=(
+            release.env
+            runtime.env
+            tailscale-version.txt
+            trivy-version.json
+            trivy-official-linux-amd64.json
+            trivy-official-linux-arm64.json
+            trivy-patched-linux-amd64.json
+            trivy-patched-linux-arm64.json
+            sbom-linux-amd64.spdx.json
+            sbom-linux-arm64.spdx.json
+          )
+          for path in "${required[@]}"; do
+            if ! test -s "$path"; then
+              echo "Missing evidence: $path" >&2
+              complete=false
+            fi
+          done
+          for pattern in 'cosign-*.json' 'attestation-*.json'; do
+            count="$(compgen -G "$pattern" | wc -l)"
+            if test "$count" -ne 3; then
+              echo "Expected three evidence files matching $pattern, found $count" >&2
+              complete=false
+            fi
+          done
+          if test "$UPLOAD_OUTCOME" != success; then
+            echo "Evidence upload outcome: $UPLOAD_OUTCOME" >&2
+            complete=false
+          fi
+          printf 'complete=%s\n' "$complete" >> "$GITHUB_OUTPUT"
+          if test "$PRIMARY_STATUS" = success && test "$complete" != true; then
+            exit 1
+          fi
+
       - name: Mark publication complete after evidence upload
+        if: success() && steps.evidence_gate.outputs.complete == 'true'
         run: touch publication-complete
 
       - name: Safely remove failed or cancelled candidate package
