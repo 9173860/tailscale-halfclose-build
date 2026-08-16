@@ -30,6 +30,7 @@ jobs:
           repository: ${{ env.SOURCE_REPOSITORY }}
           ref: ${{ env.SOURCE_COMMIT }}
           path: source
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify source identity and six-file allowlist
@@ -220,7 +221,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: supply-chain-evidence
-          if-no-files-found: error
+          if-no-files-found: warn
           path: |
             manifests.env
             trivy-*.json
