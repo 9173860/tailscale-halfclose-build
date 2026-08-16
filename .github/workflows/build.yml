@@ -402,27 +402,10 @@ jobs:
           test "$(docker buildx imagetools inspect "$IMAGE:v1.102.2-halfclose-$SOURCE_COMMIT" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest"
           test "$(docker buildx imagetools inspect "$IMAGE:sha-$SOURCE_COMMIT" --format '{{json .Manifest.Digest}}' | tr -d '"')" = "$digest"
 
-      - name: Make package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH /user/packages/container/tailscale-halfclose -f visibility=public
-
-      - name: Verify anonymous registry descriptors and amd64 runtime imageID
+      - name: Verify authenticated amd64 runtime imageID
         shell: bash
         run: |
           set -euo pipefail
-          docker logout ghcr.io
-          token="$(curl -fsSL 'https://ghcr.io/token?scope=repository:9173860/tailscale-halfclose:pull' | jq -r .token)"
-          for digest in '${{ steps.manifests.outputs.index }}' '${{ steps.manifests.outputs.amd64 }}' '${{ steps.manifests.outputs.arm64 }}'; do
-            headers="$(mktemp)"
-            body="$(mktemp)"
-            curl -fsSL -D "$headers" -o "$body" -H "Authorization: Bearer $token" \
-              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
-              "https://ghcr.io/v2/9173860/tailscale-halfclose/manifests/$digest"
-            tr -d '\r' < "$headers" | grep -Fqi "docker-content-digest: $digest"
-            test "$(sha256sum "$body" | cut -d' ' -f1)" = "${digest#sha256:}"
-            rm -f "$headers" "$body"
-          done
           docker pull --platform linux/amd64 "$IMAGE@${{ steps.manifests.outputs.amd64 }}"
           runtime_id="$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{.Id}}')"
           test "$(docker image inspect "$IMAGE@${{ steps.manifests.outputs.amd64 }}" --format '{{.Os}}/{{.Architecture}}')" = linux/amd64
