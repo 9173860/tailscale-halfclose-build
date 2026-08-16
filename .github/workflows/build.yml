@@ -252,6 +252,36 @@ jobs:
             "$GITHUB_SHA" "$SOURCE_BASE" "$SOURCE_COMMIT" "$SOURCE_TREE" "$first" "$amd64" "$arm64" | tee release.env
           printf 'index=%s\namd64=%s\narm64=%s\n' "$first" "$amd64" "$arm64" >> "$GITHUB_OUTPUT"
 
+      - name: Verify platform binaries and runtime entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > binary-inspection.txt
+          : > platform-versions.txt
+          for tuple in 'amd64:${{ steps.manifests.outputs.amd64 }}' 'arm64:${{ steps.manifests.outputs.arm64 }}'; do
+            platform="${tuple%%:*}"
+            digest="${tuple#*:}"
+            ref="$IMAGE@$digest"
+            docker pull --platform "linux/$platform" "$ref" >/dev/null
+            test "$(docker image inspect "$ref" --format '{{json .Config.Entrypoint}}')" = '["/usr/local/bin/containerboot"]'
+            cid="$(docker create --platform "linux/$platform" "$ref")"
+            mkdir -p "inspect-$platform"
+            for binary in tailscale tailscaled containerboot; do
+              docker cp "$cid:/usr/local/bin/$binary" "inspect-$platform/$binary"
+              file "inspect-$platform/$binary" | tee -a binary-inspection.txt
+            done
+            docker rm "$cid" >/dev/null
+            if test "$platform" = amd64; then
+              test "$(grep -c 'x86-64' binary-inspection.txt)" -eq 3
+            else
+              test "$(grep -c 'ARM aarch64' binary-inspection.txt)" -eq 3
+            fi
+            docker run --rm --platform "linux/$platform" --entrypoint /usr/local/bin/tailscale "$ref" version | tee -a platform-versions.txt
+          done
+          test "$(grep -c '^1.102.2$' platform-versions.txt)" -eq 2
+          test "$(grep -c "tailscale commit: $SOURCE_COMMIT" platform-versions.txt)" -eq 2
+          test "$(grep -c 'go version: go1.26.6' platform-versions.txt)" -eq 2
+
       - name: Scan patched candidate per platform with the same fresh database
         shell: bash
         run: |
@@ -415,6 +445,8 @@ jobs:
             tailscale-version.txt
             go-version.txt
             govulncheck.json
+            binary-inspection.txt
+            platform-versions.txt
             trivy-*.json
             sbom-*.spdx.json
             cosign-*.json
@@ -436,6 +468,8 @@ jobs:
             tailscale-version.txt
             go-version.txt
             govulncheck.json
+            binary-inspection.txt
+            platform-versions.txt
             trivy-version.json
             trivy-official-linux-amd64.json
             trivy-official-linux-arm64.json

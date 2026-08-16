@@ -1,15 +1,23 @@
 ARG GO_IMAGE=docker.io/library/golang@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205
 ARG RUNTIME_IMAGE=docker.io/library/alpine@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
-FROM ${GO_IMAGE} AS build
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS build
 
 WORKDIR /src
 COPY source/go.mod source/go.sum ./
-RUN go mod download
+RUN --mount=type=cache,id=tailscale-go-mod,target=/go/pkg/mod \
+    go mod download
 COPY source/ ./
 
+ARG TARGETOS
 ARG TARGETARCH
 ARG SOURCE_COMMIT
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go install -trimpath -ldflags="-s -w -X tailscale.com/version.longStamp=1.102.2-halfclose -X tailscale.com/version.shortStamp=1.102.2 -X tailscale.com/version.gitCommitStamp=${SOURCE_COMMIT}" ./cmd/tailscale ./cmd/tailscaled ./cmd/containerboot
+RUN --mount=type=cache,id=tailscale-go-build,target=/root/.cache/go-build \
+    set -eu; \
+    ldflags="-s -w -X tailscale.com/version.longStamp=1.102.2-halfclose -X tailscale.com/version.shortStamp=1.102.2 -X tailscale.com/version.gitCommitStamp=${SOURCE_COMMIT}"; \
+    mkdir -p /out; \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="${ldflags}" -o /out/tailscale ./cmd/tailscale; \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="${ldflags}" -o /out/tailscaled ./cmd/tailscaled; \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="${ldflags}" -o /out/containerboot ./cmd/containerboot
 
 FROM ${RUNTIME_IMAGE}
 
@@ -24,7 +32,7 @@ RUN apk add --no-cache \
     && ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables \
     && rm /usr/sbin/ip6tables \
     && ln -s /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables
-COPY --from=build /go/bin/tailscale /go/bin/tailscaled /go/bin/containerboot /usr/local/bin/
+COPY --from=build /out/tailscale /out/tailscaled /out/containerboot /usr/local/bin/
 RUN mkdir /tailscale && ln -s /usr/local/bin/containerboot /tailscale/run.sh
 
 LABEL org.opencontainers.image.source="https://github.com/9173860/tailscale-halfclose-build" \
